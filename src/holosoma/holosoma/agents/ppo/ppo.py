@@ -66,27 +66,24 @@ class EmpiricalNormalization(nn.Module):
         if self.until is not None and self.count >= self.until:
             return
 
-        if dist.is_available() and dist.is_initialized():
-            local_batch_size = x.shape[0]
-            world_size = dist.get_world_size()
-            global_batch_size = world_size * local_batch_size
+        # Local Welford update per step (no all_reduce). Call flush_deferred_sync()
+        # once per rollout to average stats across GPUs.
+        batch_mean = torch.mean(x, dim=0, keepdim=True)
+        batch_var = torch.var(x, dim=0, keepdim=True, unbiased=False)
+        self._apply_welford_update(batch_mean, batch_var, x.shape[0])
 
-            x_shifted = x - self._mean
-            local_sum_shifted = torch.sum(x_shifted, dim=0, keepdim=True)
-            local_sum_sq_shifted = torch.sum(x_shifted.pow(2), dim=0, keepdim=True)
+    def flush_deferred_sync(self):
+        """Average normalizer stats across GPUs. Call once per rollout."""
+        if not (dist.is_available() and dist.is_initialized()):
+            return
+        world_size = dist.get_world_size()
+        dist.all_reduce(self._mean, op=dist.ReduceOp.SUM)
+        self._mean.div_(world_size)
+        dist.all_reduce(self._var, op=dist.ReduceOp.SUM)
+        self._var.div_(world_size)
+        self._std.copy_(self._var.sqrt())
 
-            stats_to_sync = torch.cat([local_sum_shifted, local_sum_sq_shifted], dim=0)
-            dist.all_reduce(stats_to_sync, op=dist.ReduceOp.SUM)
-            global_sum_shifted, global_sum_sq_shifted = stats_to_sync
-
-            batch_mean_shifted = global_sum_shifted / global_batch_size
-            batch_var = global_sum_sq_shifted / global_batch_size - batch_mean_shifted.pow(2)
-            batch_mean = batch_mean_shifted + self._mean
-        else:
-            global_batch_size = x.shape[0]
-            batch_mean = torch.mean(x, dim=0, keepdim=True)
-            batch_var = torch.var(x, dim=0, keepdim=True, unbiased=False)
-
+    def _apply_welford_update(self, batch_mean, batch_var, global_batch_size):
         new_count = self.count + global_batch_size
 
         delta = batch_mean - self._mean
@@ -433,6 +430,11 @@ class PPO(BaseAlgo):
                     # Update episode stats using logging helper
                     self.logging_helper.update_episode_stats(rewards, dones, infos)
 
+            # Flush deferred normalizer stats sync (one all_reduce instead of per-step)
+            if self.empirical_normalization and self.is_multi_gpu:
+                self.actor_obs_normalizer.flush_deferred_sync()
+                self.critic_obs_normalizer.flush_deferred_sync()
+
             # Return / Advantage computation
             last_critic_obs = torch.cat([obs_dict[k] for k in self.critic_obs_keys], dim=1)
             last_critic_obs = self._normalize_critic_obs(last_critic_obs, update=False)
@@ -475,17 +477,23 @@ class PPO(BaseAlgo):
         generator = self.storage.mini_batch_generator(self.config.num_mini_batches, self.config.num_learning_epochs)
 
         minibatch: Minibatch
-        loss_dict = {"Value": 0.0, "Surrogate": 0.0, "Entropy": 0.0, "KL": 0.0}
+        # Accumulate losses on GPU to avoid per-minibatch GPU→CPU sync
+        gpu_loss_accum: dict[str, torch.Tensor] = {}
+        _core_keys = ("value_loss", "surrogate_loss", "entropy_loss", "kl_mean")
         for minibatch in generator:
-            loss_dict = self._update_algo_step(minibatch, loss_dict)
+            gpu_loss_accum = self._update_algo_step(minibatch, gpu_loss_accum)
 
+        # Single GPU→CPU transfer at the end
         num_updates = self.config.num_learning_epochs * self.config.num_mini_batches
-        for key in loss_dict:
-            loss_dict[key] /= num_updates
+        _key_remap = {"value_loss": "Value", "surrogate_loss": "Surrogate", "entropy_loss": "Entropy", "kl_mean": "KL"}
+        loss_dict: dict[str, float] = {}
+        for key, tensor in gpu_loss_accum.items():
+            display_key = _key_remap.get(key, key)
+            loss_dict[display_key] = (tensor / num_updates).item()
         self.storage.clear()
         return loss_dict
 
-    def _update_algo_step(self, minibatch: Minibatch, loss_dict: dict[str, float]):
+    def _update_algo_step(self, minibatch: Minibatch, gpu_loss_accum: dict[str, torch.Tensor]):
         ppo_loss_dict = self._compute_ppo_loss(minibatch)
 
         self.actor_optimizer.zero_grad()
@@ -504,16 +512,16 @@ class PPO(BaseAlgo):
         self.actor_optimizer.step()
         self.critic_optimizer.step()
 
-        loss_dict["Value"] += ppo_loss_dict.pop("value_loss").item()
-        loss_dict["Surrogate"] += ppo_loss_dict.pop("surrogate_loss").item()
-        loss_dict["Entropy"] += ppo_loss_dict.pop("entropy_loss").item()
-        loss_dict["KL"] += ppo_loss_dict.pop("kl_mean").item()
+        # Accumulate losses on GPU (no .item() sync per minibatch)
         for key, loss in ppo_loss_dict.items():
-            if key not in loss_dict:
-                loss_dict[key] = 0.0
-            loss_value = loss.item() if torch.is_tensor(loss) else loss
-            loss_dict[key] += loss_value
-        return loss_dict
+            if key in ("actor_loss", "critic_loss"):
+                continue
+            val = loss.detach() if torch.is_tensor(loss) else torch.tensor(loss, device=self.device)
+            if key not in gpu_loss_accum:
+                gpu_loss_accum[key] = val.clone()
+            else:
+                gpu_loss_accum[key] += val
+        return gpu_loss_accum
 
     def _compute_ppo_loss(self, minibatch: Minibatch):
         actions_batch = minibatch["actions"]
