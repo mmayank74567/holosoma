@@ -99,6 +99,12 @@ class MotionConfig:
     """Directory (or comma-separated directories) of .npz motion files.
     When non-empty, takes precedence over motion_file."""
 
+    shard_motions: bool = False
+    """When True and using motion_dir with multi-GPU training, each GPU loads only its
+    shard of the motion files (round-robin by global rank). Reduces memory and load time
+    proportionally to the number of GPUs. Each GPU's environments sample only from their
+    local shard."""
+
     # motion sampling related
     use_adaptive_timesteps_sampler: bool = False
     """During training, whether to prioritize training on motion segments where the robot fails often."""

@@ -272,6 +272,8 @@ class MultiMotionLoader:
         robot_body_names: list[str],
         robot_joint_names: list[str],
         device: str = "cpu",
+        shard_rank: int = 0,
+        shard_world_size: int = 1,
     ):
         # Support comma-separated directories for combining multiple datasets
         dirs = [d.strip() for d in motion_dir.split(",")]
@@ -282,7 +284,17 @@ class MultiMotionLoader:
             logger.info(f"MultiMotionLoader: found {len(files)} .npz files in {expanded}")
             motion_files.extend(files)
         assert len(motion_files) > 0, f"No .npz files found in {motion_dir}"
-        logger.info(f"MultiMotionLoader: loading {len(motion_files)} total motion files")
+
+        # Shard motion files across GPUs when shard_world_size > 1
+        if shard_world_size > 1:
+            total_files = len(motion_files)
+            motion_files = [f for i, f in enumerate(motion_files) if i % shard_world_size == shard_rank]
+            logger.info(
+                f"MultiMotionLoader: shard {shard_rank}/{shard_world_size}, "
+                f"loading {len(motion_files)}/{total_files} motion files"
+            )
+        else:
+            logger.info(f"MultiMotionLoader: loading {len(motion_files)} total motion files")
 
         loaders = []
         skipped = 0
@@ -594,11 +606,19 @@ class MotionCommand(CommandTermBase):
         )
         self.motion: MotionLoader | MultiMotionLoader
         if self.motion_cfg.motion_dir:
+            # Determine sharding params from torch distributed if enabled
+            shard_rank = 0
+            shard_world_size = 1
+            if self.motion_cfg.shard_motions and torch.distributed.is_initialized():
+                shard_rank = torch.distributed.get_rank()
+                shard_world_size = torch.distributed.get_world_size()
             self.motion = MultiMotionLoader(
                 self.motion_cfg.motion_dir,
                 robot_body_names_alias,
                 robot_joint_names,
                 device=self.device,
+                shard_rank=shard_rank,
+                shard_world_size=shard_world_size,
             )
         else:
             self.motion = MotionLoader(
@@ -698,13 +718,16 @@ class MotionCommand(CommandTermBase):
         self.time_steps[env_ids] = torch.where(already_last_timestep_mask, end_idx - 2, self.time_steps[env_ids])
 
         # 1. Get the root/body poses from the motion data
-        root_pos = self.root_pos_w[env_ids].clone()
-        root_rot = self.root_quat_w[env_ids].clone()
-        root_lin_vel = self.root_lin_vel_w[env_ids].clone()
-        root_ang_vel = self.root_ang_vel_w[env_ids].clone()
+        # Index only reset-env timesteps (raw body index 0 = root, same as root_pos_w property)
+        reset_ts = self.time_steps[env_ids]
+        env_origins = self._env.simulator.scene.env_origins[env_ids]
+        root_pos = self.motion._body_pos_w[reset_ts, 0] + env_origins
+        root_rot = self.motion._body_quat_w[reset_ts, 0]
+        root_lin_vel = self.motion._body_lin_vel_w[reset_ts, 0]
+        root_ang_vel = self.motion._body_ang_vel_w[reset_ts, 0]
 
-        dof_pos = self.joint_pos[env_ids].clone()
-        dof_vel = self.joint_vel[env_ids].clone()
+        dof_pos = self.motion.get_joint_pos(reset_ts)
+        dof_vel = self.motion.get_joint_vel(reset_ts)
 
         # 2. Adding noise
         # 2.1 prepare the noise scale
@@ -782,9 +805,9 @@ class MotionCommand(CommandTermBase):
 
         # 4. Set the object states in simulator
         if self.motion.has_object:
-            obj_pos = self.object_pos_w[env_ids]
-            obj_ori = self.object_quat_w[env_ids]
-            obj_lin_vel = self.object_lin_vel_w[env_ids]
+            obj_pos = self.motion.get_object_pos_w(reset_ts) + env_origins
+            obj_ori = self.motion.get_object_quat_w(reset_ts)
+            obj_lin_vel = self.motion.get_object_lin_vel_w(reset_ts)
 
             # 4.2 add noise to the object states
             obj_pos_noise = torch.tensor(
