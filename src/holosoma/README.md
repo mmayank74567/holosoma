@@ -99,6 +99,9 @@ python src/holosoma/holosoma/train_agent.py \
     exp:g1-29dof-wbt \
     logger:wandb
 
+# G1 with PPO and random box push
+python src/holosoma/holosoma/train_agent.py \               exp:g1-29dof-wbt-w-object-box-push-random     logger:wandb
+
 # Custom motion file
 source scripts/source_isaacsim_setup.sh
 python src/holosoma/holosoma/train_agent.py \
