@@ -191,11 +191,20 @@ g1_29dof_wbt_fast_sac_w_object = replace(
     ),
 )
 
+g1_29dof_wbt_w_object_box_push_random = replace(
+    g1_29dof_wbt_w_object,
+    training=replace(
+        g1_29dof_wbt_w_object.training,
+        name="box_push_random",
+    ),
+)
+
 __all__ = [
     "g1_29dof_wbt",
     "g1_29dof_wbt_fast_sac",
     "g1_29dof_wbt_fast_sac_w_object",
     "g1_29dof_wbt_w_object",
+    "g1_29dof_wbt_w_object_box_push_random",
 ]
 
 """

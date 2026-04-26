@@ -102,6 +102,12 @@ class WholeBodyTrackingManager(BaseTask):
         self.record_push_robot_vel_buf = torch.zeros(
             self.num_envs, 6, dtype=torch.float, device=self.device, requires_grad=False
         )
+        self.push_object_vel_buf = torch.zeros(
+            self.num_envs, 6, dtype=torch.float, device=self.device, requires_grad=False
+        )
+        self.record_push_object_vel_buf = torch.zeros(
+            self.num_envs, 6, dtype=torch.float, device=self.device, requires_grad=False
+        )
         self._randomize_push_robots = False
         self._max_push_vel = torch.zeros(6, dtype=torch.float32, device=self.device)
 
@@ -127,6 +133,34 @@ class WholeBodyTrackingManager(BaseTask):
         # Push impulses only take effect in the simulator once we write the mutated root state tensor back.
         self.simulator.set_actor_root_state_tensor_robots(env_ids, self.simulator.robot_root_states)
         self._max_push_vel = max_vel_tensor.clone()
+
+    def _push_objects(self, env_ids):
+        """Random pushes the object by setting a randomized root velocity."""
+        if len(env_ids) == 0:
+            return
+
+        self.need_to_refresh_envs[env_ids] = True
+        max_vel_tensor = self._max_push_vel
+        if self.randomization_manager is not None:
+            state = self.randomization_manager.get_state("push_randomizer_state")
+            if state is not None:
+                max_vel_tensor = state.max_push_vel_object.clone().to(self.device)
+
+        if not isinstance(max_vel_tensor, torch.Tensor) or max_vel_tensor.numel() != 6:
+            raise ValueError("WholeBodyTracking object push velocity vector must have exactly 6 components.")
+
+        motion_command = self.command_manager.get_state("motion_command")
+        if motion_command is None or not getattr(motion_command.motion, "has_object", False):
+            return
+
+        rand = torch.rand(len(env_ids), 6, device=self.device) * 2 - 1
+        self.push_object_vel_buf[env_ids] = rand * max_vel_tensor.unsqueeze(0)
+        self.record_push_object_vel_buf[env_ids] = self.push_object_vel_buf[env_ids].clone()
+
+        actor_indices = self.simulator.get_actor_indices(["object"], env_ids)
+        object_states = self.simulator.all_root_states[actor_indices, :13].clone()
+        object_states[:, 7:13] += self.push_object_vel_buf[env_ids]
+        self.simulator.set_actor_states(["object"], env_ids, object_states)
 
     #########################################################################################################
     ## Debug visualization

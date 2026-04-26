@@ -138,11 +138,14 @@ class PushRandomizerState(RandomizationTermBase):
         if vector_max is None:
             raise ValueError("PushRandomizerState requires `max_push_vel` to be specified.")
         self._max_push_vel_tensor = torch.empty(0, dtype=torch.float32, device=env.device)
+        self._max_push_vel_object_tensor = torch.empty(0, dtype=torch.float32, device=env.device)
         self._set_max_push_tensor(vector_max)
+        self._set_max_push_object_tensor(params.get("max_push_vel_object", vector_max))
         self.enabled: bool = bool(params.get("enabled", True))
         logger.info(
             f"[Randomization] PushRandomizerState initialized (enabled={self.enabled}, \
                 max_push_vel={self._max_push_vel_tensor.tolist()}, \
+                max_push_vel_object={self._max_push_vel_object_tensor.tolist()}, \
                 interval_s={self.push_interval_range})",
         )
 
@@ -189,6 +192,7 @@ class PushRandomizerState(RandomizationTermBase):
         enabled: bool | None = None,
         push_interval_s: Sequence[float] | None = None,
         max_push_vel: Sequence[float] | None = None,
+        max_push_vel_object: Sequence[float] | None = None,
     ) -> None:
         if enabled is not None:
             self.enabled = bool(enabled)
@@ -196,6 +200,8 @@ class PushRandomizerState(RandomizationTermBase):
             self.push_interval_range = [float(push_interval_s[0]), float(push_interval_s[1])]
         if max_push_vel is not None:
             self._set_max_push_tensor(max_push_vel)
+        if max_push_vel_object is not None:
+            self._set_max_push_object_tensor(max_push_vel_object)
 
     def resample(self, env_ids: torch.Tensor | None = None) -> None:
         idx = self._ensure_indices(env_ids)
@@ -221,6 +227,10 @@ class PushRandomizerState(RandomizationTermBase):
     def max_push_vel(self) -> torch.Tensor:
         return self._max_push_vel_tensor
 
+    @property
+    def max_push_vel_object(self) -> torch.Tensor:
+        return self._max_push_vel_object_tensor
+
     def _ensure_indices(self, env_ids: torch.Tensor | None) -> torch.Tensor:
         if env_ids is None:
             return torch.arange(self.env.num_envs, device=self.env.device, dtype=torch.long)
@@ -242,6 +252,12 @@ class PushRandomizerState(RandomizationTermBase):
         if tensor.numel() == 0:
             raise ValueError("max_push_vel must contain at least one value.")
         self._max_push_vel_tensor = tensor.clone()
+
+    def _set_max_push_object_tensor(self, values: Sequence[float]) -> None:
+        tensor = torch.as_tensor(values, dtype=torch.float32, device=self.env.device).flatten()
+        if tensor.numel() == 0:
+            raise ValueError("max_push_vel_object must contain at least one value.")
+        self._max_push_vel_object_tensor = tensor.clone()
 
 
 class ActuatorRandomizerState(RandomizationTermBase):
@@ -1154,6 +1170,7 @@ def apply_pushes(
     enabled: bool | None = None,
     push_interval_s: Sequence[float] | None = None,
     max_push_vel: Sequence[float] | None = None,
+    max_push_vel_object: Sequence[float] | None = None,
     **_,
 ) -> None:
     """Apply random pushes based on the current schedule."""
@@ -1161,8 +1178,14 @@ def apply_pushes(
     if state is None:
         raise AttributeError("PushRandomizerState is not registered with the randomization manager.")
 
-    state.configure(enabled=enabled, push_interval_s=push_interval_s, max_push_vel=max_push_vel)
+    state.configure(
+        enabled=enabled,
+        push_interval_s=push_interval_s,
+        max_push_vel=max_push_vel,
+        max_push_vel_object=max_push_vel_object,
+    )
     env._push_robots_enabled = state.enabled
+    env._push_objects_enabled = state.enabled
 
     if env.is_evaluating or not state.enabled:
         return
@@ -1175,3 +1198,5 @@ def apply_pushes(
     state.resample(push_robot_env_ids)
     env._max_push_vel = state.max_push_vel.clone()
     env._push_robots(push_robot_env_ids)
+    if hasattr(env, "_push_objects"):
+        env._push_objects(push_robot_env_ids)

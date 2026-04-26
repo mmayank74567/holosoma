@@ -9,6 +9,7 @@ from holosoma.config_values.wbt.g1.experiment import (
     g1_29dof_wbt_fast_sac,
     g1_29dof_wbt_fast_sac_w_object,
     g1_29dof_wbt_w_object,
+    g1_29dof_wbt_w_object_box_push_random,
 )
 
 DEFAULTS = {
@@ -20,6 +21,7 @@ DEFAULTS = {
     "g1_29dof_wbt_w_object": g1_29dof_wbt_w_object,
     "g1_29dof_wbt_fast_sac": g1_29dof_wbt_fast_sac,
     "g1_29dof_wbt_fast_sac_w_object": g1_29dof_wbt_fast_sac_w_object,
+    "g1_29dof_wbt_w_object_box_push_random": g1_29dof_wbt_w_object_box_push_random,
 }
 
 AnnotatedExperimentConfig = Annotated[
