@@ -1,0 +1,49 @@
+workflow:
+  name: holosoma-ppo-training-with-object
+  pool: humanoid
+
+  resources:
+    default:
+      gpu: 4
+      memory: 128Gi
+      storage: 200Gi
+
+  tasks:
+  - name: holosoma_ppo_training_with_object
+    image: airlab-docker.andrew.cmu.edu/humanoid/holosoma_everything:latest
+    credentials:
+      github-pat: /tmp/github
+      wandb-api-key: /tmp/wandb
+
+    command: ["bash", "-c"]
+    args:
+    - |
+        GITHUB_PAT=$(cat /tmp/github/github-pat)
+        git config --global credential.helper store
+        echo "https://token:${GITHUB_PAT}@github.com" > ~/.git-credentials
+        git config --global credential.helper 'store --file ~/.git-credentials'
+
+        rm -rf /workspace/holosoma
+
+        git clone https://github.com/mmayank74567/holosoma.git /workspace/holosoma
+        cd /workspace/holosoma
+
+        export WANDB_API_KEY=$(cat /tmp/wandb/wandb-api-key)
+        export WANDB_ENTITY=neuro-symbolic-AI
+        wandb login "$WANDB_API_KEY"
+
+        export NCCL_SHM_DISABLE=1
+        export NCCL_P2P_DISABLE=1
+
+        source scripts/source_isaacsim_setup.sh
+        torchrun --nproc_per_node=4 src/holosoma/holosoma/train_agent.py \
+            exp:g1-29dof-wbt-w-object \
+            logger:wandb \
+            --training.num-envs 16384 \
+            --training.multigpu True \
+            --logger.base_dir={{output}} \
+            --simulator.config.scene.env-spacing 4.0
+
+
+    outputs:
+    - url: s3://humanoid_osmo_dataset/holosoma/training/ppo/g1-29dof-wbt-w-object
