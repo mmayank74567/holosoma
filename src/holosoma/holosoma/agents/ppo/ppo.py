@@ -786,6 +786,12 @@ class PPO(BaseAlgo):
 
     def _synchronize_model_weights(self):
         """Synchronize actor and critic weights across all GPUs."""
+        # Ensure all PhysX/IsaacSim GPU kernels from scene/env setup have actually
+        # finished before NCCL touches the device - otherwise the broadcast can race
+        # against still-in-flight simulator GPU work and fault with an illegal memory
+        # access that looks like a NCCL bug but isn't.
+        torch.cuda.synchronize()
+
         # Broadcast actor weights from rank 0 to all other ranks
         for param in self.actor.parameters():
             torch.distributed.broadcast(param.data, src=0)
