@@ -98,7 +98,12 @@ def setup_isaaclab_launcher(config: ExperimentConfig | RunSimConfig, device: str
         # Give each rank its own HOME so Kit's data/cache dirs (resolved relative to
         # $HOME by carb, e.g. ~/.nvidia-omniverse) don't contend on the same omni.kvdb
         # files across processes (carb.tasking deadlocks under multi-process startup).
-        rank_home = f"/tmp/isaac_home_{local_rank}"
+        # Keyed on global RANK rather than LOCAL_RANK: when working around PhysX's
+        # non-zero-CUDA-device bug, every process is launched with LOCAL_RANK=0 (each
+        # one only sees its own GPU via CUDA_VISIBLE_DEVICES), so LOCAL_RANK is no
+        # longer unique per process in that mode.
+        global_rank = int(os.environ.get("RANK", local_rank))
+        rank_home = f"/tmp/isaac_home_{global_rank}"
         os.makedirs(rank_home, exist_ok=True)
         os.environ["HOME"] = rank_home
     elif device is not None:
