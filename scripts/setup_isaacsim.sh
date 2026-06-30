@@ -85,5 +85,14 @@ if [[ ! -f $SENTINEL_FILE ]]; then
 
   # Force upgrade wandb to override rl-games constraint
   pip install --upgrade 'wandb>=0.21.1'
+
+  # isaacsim-kernel (pulled in by isaacsim[all,extscache]) depends on nvidia-nccl-cu13,
+  # which overwrites the nvidia-nccl-cu12 lib that matches our torch==2.7.0+cu128 install
+  # (both packages install to the same nvidia/nccl/lib/ path). The host driver here only
+  # supports up to CUDA 13.0, so the cu13 (13.2-targeted) library fails at kernel launch
+  # time with "invalid argument" during multi-GPU NCCL collectives. Re-pin cu12 last so
+  # its files are the ones actually on disk.
+  pip install --force-reinstall --no-deps "nvidia-nccl-cu12==2.26.2"
+
   touch $SENTINEL_FILE
 fi
