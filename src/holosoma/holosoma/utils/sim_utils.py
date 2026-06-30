@@ -92,8 +92,15 @@ def setup_isaaclab_launcher(config: ExperimentConfig | RunSimConfig, device: str
     args_cli.headless = config.training.headless
     if int(os.environ.get("WORLD_SIZE", "1")) > 1:
         # Distribute simulator across GPUs when using multi-gpu training
-        args_cli.device = f"cuda:{int(os.environ.get('LOCAL_RANK', '0'))}"
+        local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+        args_cli.device = f"cuda:{local_rank}"
         args_cli.distributed = True
+        # Give each rank its own HOME so Kit's data/cache dirs (resolved relative to
+        # $HOME by carb, e.g. ~/.nvidia-omniverse) don't contend on the same omni.kvdb
+        # files across processes (carb.tasking deadlocks under multi-process startup).
+        rank_home = f"/tmp/isaac_home_{local_rank}"
+        os.makedirs(rank_home, exist_ok=True)
+        os.environ["HOME"] = rank_home
     elif device is not None:
         # Use the resolved device
         args_cli.device = device
