@@ -23,10 +23,11 @@ workflow:
         echo "https://token:${GITHUB_PAT}@github.com" > ~/.git-credentials
         git config --global credential.helper 'store --file ~/.git-credentials'
 
-        rm -rf /workspace/holosoma
+        cd /workspace
+        rm -rf holosoma
 
         git clone https://github.com/mmayank74567/holosoma.git /workspace/holosoma
-        cd /workspace/holosoma
+        cd holosoma
 
         export WANDB_API_KEY=$(cat /tmp/wandb/wandb-api-key)
         export WANDB_ENTITY=neuro-symbolic-AI
